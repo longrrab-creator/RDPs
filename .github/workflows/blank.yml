@@ -6,17 +6,17 @@ on:
       duration:
         description: '🕐 Thời gian sử dụng'
         required: false
-        default: '5h40m'
+        default: '24h'
         type: choice
         options:
         - '1h'
         - '3h' 
-        - '5h40m'
+        - '24h'
 
 jobs:
   Premium-RDP-Setup:
     runs-on: windows-latest
-    timeout-minutes: 340
+    timeout-minutes: 1440
     
     steps:
       # BANNER CHÀO MỪNG
@@ -256,33 +256,45 @@ jobs:
           # ===============================
           # 🔥 BACKGROUND JOB XOAY IP 4 PHÚT
           # ===============================
-          Start-Job -Name "Rotate-Tailscale-IP" -ScriptBlock {
+          $tsKey = $env:TAILSCALE_AUTH_KEY
+
+          Start-Job -Name "Rotate-Tailscale-IP" -ArgumentList $tsKey -ScriptBlock {
+              param($TAILSCALE_KEY)
+
+              Import-Module NetTCPIP -ErrorAction SilentlyContinue
               $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
               while ($true) {
                   Start-Sleep 240   # ⏱️ 4 PHÚT
 
-                  Write-Host ""
-                  Write-Host "🔁 [IP ROTATE] Đang đổi IP..." -ForegroundColor Yellow
+                  # Kiểm tra có RDP kết nối không
+                  $rdpConnections = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue | Where-Object {$_.State -eq 'Established'}
 
-                  & $tsExe down --accept-risk=all | Out-Null
-                  Start-Sleep 5
+                  if ($rdpConnections.Count -eq 0) {
+                      Write-Host ""
+                      Write-Host "🔁 [IP ROTATE] Đang đổi IP..." -ForegroundColor Yellow
 
-                  & $tsExe up `
-                    --authkey=$env:TAILSCALE_AUTH_KEY `
-                    --hostname=ai-stv-rotate-$env:GITHUB_RUN_ID-$(Get-Random) `
-                    --accept-routes `
-                    --accept-dns `
-                    --reset | Out-Null
+                      & $tsExe down --accept-risk=all | Out-Null
+                      Start-Sleep 5
 
-                  for ($i = 0; $i -lt 15; $i++) {
-                      $newIp = & $tsExe ip -4 2>$null
-                      if ($newIp -match '^\d+\.\d+\.\d+\.\d+$') {
-                          echo "TAILSCALE_IP=$newIp" >> $env:GITHUB_ENV
-                          Write-Host "🔁 [IP ROTATE] IP mới: $newIp" -ForegroundColor Green
-                          break
+                      & $tsExe up `
+                        --authkey=$TAILSCALE_KEY `
+                        --hostname=ai-stv-rotate-$env:GITHUB_RUN_ID-$(Get-Random) `
+                        --accept-routes `
+                        --accept-dns `
+                        --reset | Out-Null
+
+                      for ($i = 0; $i -lt 15; $i++) {
+                          $newIp = & $tsExe ip -4 2>$null
+                          if ($newIp -match '^\d+\.\d+\.\d+\.\d+$') {
+                              echo "TAILSCALE_IP=$newIp" >> $env:GITHUB_ENV
+                              Write-Host "🔁 [IP ROTATE] IP mới: $newIp" -ForegroundColor Green
+                              break
+                          }
+                          Start-Sleep 3
                       }
-                      Start-Sleep 3
+                  } else {
+                      Write-Host "🔁 [IP ROTATE] Bỏ qua - đang có RDP kết nối" -ForegroundColor Blue
                   }
               }
           }
@@ -449,7 +461,6 @@ jobs:
           }
           
           # Dọn dẹp jobs còn sót
-          Get-Job | Stop-Job -PassThru | Remove-Job -Force -ErrorAction SilentlyContinue
+          Get-Job | Stop-Job -ErrorAction SilentlyContinue
+          Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
           
-          Write-Host ""
-          Write-Host "🎉 Dọn dẹp hoàn tất! Hẹn gặp lại! 👋" -ForegroundColor Green
